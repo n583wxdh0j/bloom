@@ -3,7 +3,6 @@ package bloom
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
 	"hash/crc64"
 	"log"
 	"math"
@@ -19,7 +18,7 @@ const truePositiveProbability = 0.6185
 type BloomFilter interface {
 	Put([]byte)
 	Check([]byte) bool
-	String()
+	Println(int)
 }
 
 type bloomFilter struct {
@@ -29,16 +28,17 @@ type bloomFilter struct {
 	salts        [][]byte
 }
 
-func NewBloomFilter(size uint64, saltsAndHashFuncCount int) BloomFilter {
-	salts := make([][]byte, 0, saltsAndHashFuncCount)
+func NewBloomFilter(nBits uint64, nHashFunc int) BloomFilter {
+	salts := make([][]byte, 0, nHashFunc)
 	rand.Seed(time.Now().UnixNano())
-	for i := 0; i < saltsAndHashFuncCount; i++ {
+	for i := 0; i < nHashFunc; i++ {
 		n := rand.Int()
 		salts = append(salts, []byte(strconv.Itoa(n)))
 	}
+	nBytes := (nBits + 7) / 8
 	return &bloomFilter{
-		mask:         make([]byte, size, size),
-		hashFunction: getHasherUsesCRC64(size),
+		mask:         make([]byte, nBytes, nBytes),
+		hashFunction: getHasherUsesCRC64(nBytes),
 		salts:        salts,
 	}
 }
@@ -56,8 +56,8 @@ func (bf *bloomFilter) Check(item []byte) bool {
 	bf.RLock()
 	defer bf.RUnlock()
 	for _, salt := range bf.salts {
-		hashNumber := bf.hashFunction(salt, item)
-		res := bf.mask[hashNumber] & (1 << hashNumber)
+		hash := bf.hashFunction(salt, item)
+		res := bf.mask[hash] & (1 << (hash & 7))
 		if res == 0 {
 			return false
 		}
@@ -65,47 +65,48 @@ func (bf *bloomFilter) Check(item []byte) bool {
 	return true
 }
 
-func (bf *bloomFilter) String() {
-	var howManyTrue int
+func (bf *bloomFilter) Println(lenOfLine int) {
+	var truePositiveCounter int
 	b := strings.Builder{}
 	for key, _ := range bf.mask {
-		if key%200 == 0 {
+		if key%lenOfLine == 0 {
 			b.WriteString("\n")
 		}
-		bit := bf.mask[key]
-		if bit > 0 {
-			b.WriteString("▨")
-			howManyTrue++
-		} else {
-			b.WriteString("□")
+		for i := uint8(0); i < 8; i++ {
+			res := bf.mask[key] & (1 << i)
+			if res == 0 {
+				b.WriteString("□")
+			} else {
+				b.WriteString("▨")
+				truePositiveCounter++
+			}
 		}
 	}
-	log.Printf("Count of true positive: %v", howManyTrue)
+	log.Printf("Count of true positive: %v", truePositiveCounter)
 	log.Println(b.String())
 }
 
 func getHasherUsesStdSHA256(size uint64) func(salt []byte, item []byte) uint64 {
 	return func(salt []byte, item []byte) uint64 {
-		hash := sha256.New()
-		hash.Write(salt)
-		hash.Write(item)
-		data := binary.BigEndian.Uint64(hash.Sum(nil))
-		return data % size
+		hasher := sha256.New()
+		hasher.Write(salt)
+		hasher.Write(item)
+		hash := binary.BigEndian.Uint64(hasher.Sum(nil))
+		return hash % size
 	}
 }
 
 func getHasherUsesCRC64(size uint64) func(salt []byte, item []byte) uint64 {
 	return func(salt []byte, item []byte) uint64 {
 		ECMATable := crc64.MakeTable(crc64.ISO)
-		saltBinary := salt
-		item = append(item, saltBinary...)
-		data := crc64.Checksum(item, ECMATable)
-		return data % size
+		item = append(item, salt...)
+		hash := crc64.Checksum(item, ECMATable)
+		return hash % size
 	}
 }
 
-func CalcHshCountAndProbability(maskSize int, dataSize int) {
+func CalcHashCountAndProbability(maskSize int, dataSize int) {
 	hashCount := 0.6931 * (float64(maskSize) / float64(dataSize))
 	probability := math.Pow(truePositiveProbability, float64(maskSize)/float64(dataSize)) * 100
-	fmt.Printf("Hash count = %v, probability = %v", hashCount, probability)
+	log.Printf("Hash count = %v, probability = %v", hashCount, probability)
 }
